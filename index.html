@@ -216,6 +216,16 @@
         </div>
         <div class="row">
             <div class="field">
+                <label for="link-length-input">Link length <span id="link-length-value" class="value-pill">1.0x</span></label>
+                <input id="link-length-input" type="range" min="0.6" max="3" step="0.1" value="1" />
+            </div>
+            <div class="field">
+                <label for="graph-gap-input">Distance between graphs <span id="graph-gap-value" class="value-pill">140px</span></label>
+                <input id="graph-gap-input" type="range" min="40" max="420" step="10" value="140" />
+            </div>
+        </div>
+        <div class="row">
+            <div class="field">
                 <label for="node-size-input">Node size <span id="node-size-value" class="value-pill">1.0x</span></label>
                 <input id="node-size-input" type="range" min="0.6" max="3" step="0.1" value="1" />
             </div>
@@ -287,6 +297,10 @@
         const layoutSpacingInput = document.getElementById('layout-spacing-input');
         const layoutSpacingValue = document.getElementById('layout-spacing-value');
         const layoutIterationsInput = document.getElementById('layout-iterations-input');
+        const linkLengthInput = document.getElementById('link-length-input');
+        const linkLengthValue = document.getElementById('link-length-value');
+        const graphGapInput = document.getElementById('graph-gap-input');
+        const graphGapValue = document.getElementById('graph-gap-value');
         const nodeSizeInput = document.getElementById('node-size-input');
         const nodeSizeValue = document.getElementById('node-size-value');
         const maxLabelCharsInput = document.getElementById('max-label-chars-input');
@@ -336,8 +350,12 @@
 
         function updateControlPills() {
             const spacing = readNumber(layoutSpacingInput, 2, 1, 6);
+            const linkLength = readNumber(linkLengthInput, 1, 0.6, 3);
+            const graphGap = readNumber(graphGapInput, 140, 40, 420);
             const nodeScale = readNumber(nodeSizeInput, 1, 0.6, 3);
             layoutSpacingValue.textContent = `${spacing.toFixed(1)}x`;
+            linkLengthValue.textContent = `${linkLength.toFixed(1)}x`;
+            graphGapValue.textContent = `${Math.round(graphGap)}px`;
             nodeSizeValue.textContent = `${nodeScale.toFixed(1)}x`;
         }
 
@@ -382,16 +400,134 @@
 
         function getLayoutParams() {
             const spacing = readNumber(layoutSpacingInput, 2, 1, 6);
+            const linkLength = readNumber(linkLengthInput, 1, 0.6, 3);
             const iterations = Math.floor(readNumber(layoutIterationsInput, 350, 50, 2000));
             return {
                 spacing,
+                linkLength,
                 iterations,
                 settings: {
-                    gravity: Math.max(0.05, 0.45 / spacing),
+                    gravity: Math.max(0.15, (1.1 / spacing) / Math.sqrt(linkLength)),
+                    strongGravityMode: true,
+                    adjustSizes: true,
                     barnesHutOptimize: true,
-                    scalingRatio: 9 * spacing
+                    scalingRatio: 5 * spacing * linkLength,
+                    slowDown: 1.4
                 }
             };
+        }
+
+        function getConnectedComponents() {
+            if (!graphInstance) return [];
+            const seen = new Set();
+            const components = [];
+
+            graphInstance.forEachNode((nodeId) => {
+                if (seen.has(nodeId)) return;
+                const stack = [nodeId];
+                const component = [];
+                seen.add(nodeId);
+
+                while (stack.length) {
+                    const current = stack.pop();
+                    component.push(current);
+                    graphInstance.forEachNeighbor(current, (neighborId) => {
+                        if (!seen.has(neighborId)) {
+                            seen.add(neighborId);
+                            stack.push(neighborId);
+                        }
+                    });
+                }
+                components.push(component);
+            });
+
+            return components;
+        }
+
+        function packConnectedComponents() {
+            if (!graphInstance) return;
+            const components = getConnectedComponents();
+            if (components.length <= 1) return;
+
+            const boxes = components.map((component) => {
+                let minX = Infinity;
+                let maxX = -Infinity;
+                let minY = Infinity;
+                let maxY = -Infinity;
+
+                component.forEach((nodeId) => {
+                    const { x, y } = graphInstance.getNodeAttributes(nodeId);
+                    minX = Math.min(minX, x);
+                    maxX = Math.max(maxX, x);
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                });
+
+                return {
+                    component,
+                    minX,
+                    maxX,
+                    minY,
+                    maxY,
+                    width: Math.max(20, maxX - minX),
+                    height: Math.max(20, maxY - minY),
+                    centerX: (minX + maxX) / 2,
+                    centerY: (minY + maxY) / 2
+                };
+            });
+
+            boxes.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+            const totalWidth = boxes.reduce((sum, box) => sum + box.width, 0);
+            const rowLimit = Math.max(300, Math.sqrt(totalWidth * 220));
+            const gap = readNumber(graphGapInput, 140, 40, 420);
+
+            let cursorX = 0;
+            let cursorY = 0;
+            let rowHeight = 0;
+
+            boxes.forEach((box) => {
+                const requiredWidth = box.width + gap;
+                const requiredHeight = box.height + gap;
+
+                if (cursorX > 0 && cursorX + requiredWidth > rowLimit) {
+                    cursorX = 0;
+                    cursorY += rowHeight;
+                    rowHeight = 0;
+                }
+
+                const targetCenterX = cursorX + requiredWidth / 2;
+                const targetCenterY = cursorY + requiredHeight / 2;
+                const dx = targetCenterX - box.centerX;
+                const dy = targetCenterY - box.centerY;
+
+                box.component.forEach((nodeId) => {
+                    graphInstance.updateNodeAttributes(nodeId, (attrs) => ({
+                        ...attrs,
+                        x: attrs.x + dx,
+                        y: attrs.y + dy
+                    }));
+                });
+
+                cursorX += requiredWidth;
+                rowHeight = Math.max(rowHeight, requiredHeight);
+            });
+
+            let centerX = 0;
+            let centerY = 0;
+            let count = 0;
+            graphInstance.forEachNode((nodeId, attrs) => {
+                centerX += attrs.x;
+                centerY += attrs.y;
+                count += 1;
+            });
+            if (!count) return;
+            centerX /= count;
+            centerY /= count;
+            graphInstance.updateEachNodeAttributes((_, attrs) => ({
+                ...attrs,
+                x: attrs.x - centerX,
+                y: attrs.y - centerY
+            }));
         }
 
         function startLiveLayoutLoop(isDraggingRef) {
@@ -571,6 +707,13 @@
         widthInput.addEventListener('change', updateExportButtonLabel);
         heightInput.addEventListener('change', updateExportButtonLabel);
         layoutSpacingInput.addEventListener('input', updateControlPills);
+        linkLengthInput.addEventListener('input', updateControlPills);
+        graphGapInput.addEventListener('input', () => {
+            updateControlPills();
+            if (!graphInstance || !rendererInstance) return;
+            packConnectedComponents();
+            scheduleRenderRefresh();
+        });
         nodeSizeInput.addEventListener('input', () => {
             updateControlPills();
             applyAppearanceSettings();
@@ -683,6 +826,9 @@
             rendererInstance = new window.Sigma(graphInstance, document.getElementById('container'), {
                 allowInvalidContainer: true,
                 renderLabels: !!labelsToggle.checked,
+                labelColor: { color: "#eaf1ff" },
+                labelRenderedSizeThreshold: 6,
+                labelDensity: 1.1,
                 defaultDrawNodeHover: () => {},
                 edgeColor: "default"
             });
@@ -707,6 +853,7 @@
                     iterations,
                     settings
                 });
+                packConnectedComponents();
             } catch (err) {
                 status.innerText = "❌ Could not load ForceAtlas2 layout dependency.";
                 console.error(err);
