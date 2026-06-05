@@ -1,5 +1,7 @@
 # SurrealDB Graph Visualizer
 
+Live demo: [https://zazabe.github.io/surrealdb-render-graph/](https://zazabe.github.io/surrealdb-render-graph/)
+
 Static client-side page to load a SurrealDB JSON export, visualize it as a graph, and export high-resolution PNG snapshots.
 
 ## Publish on GitHub Pages
