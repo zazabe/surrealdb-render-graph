@@ -946,8 +946,9 @@
                 });
             }
 
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
-            ctx.lineWidth = Math.max(0.7, targetWidth / 1800);
+            // Export edges a bit brighter/thicker than on-screen for print readability.
+            ctx.strokeStyle = "rgba(230, 238, 255, 0.4)";
+            ctx.lineWidth = Math.max(1.2, targetWidth / 1300);
             ctx.beginPath();
             graphInstance.forEachEdge((_, __, source, target) => {
                 const a = drawnNodes.get(source);
