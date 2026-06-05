@@ -232,16 +232,43 @@
             return forceAtlas2Lib;
         }
 
-        function getRootArray(parsed) {
-            if (Array.isArray(parsed)) {
-                if (parsed.length === 1 && parsed[0] && Array.isArray(parsed[0].result)) {
-                    return parsed[0].result;
-                }
-                return parsed;
+        function normalizeArrayCandidate(candidate) {
+            if (!candidate) return null;
+            let current = candidate;
+
+            // Common SurrealDB wrapper: [[...rows]]
+            while (Array.isArray(current) && current.length === 1 && Array.isArray(current[0])) {
+                current = current[0];
             }
-            if (Array.isArray(parsed.result)) return parsed.result;
-            if (Array.isArray(parsed.data)) return parsed.data;
-            if (parsed.result && Array.isArray(parsed.result.result)) return parsed.result.result;
+
+            // Common SurrealDB wrapper: [{ status, result: [...] }]
+            if (Array.isArray(current) && current.length > 0 && current.every(item => item && Array.isArray(item.result))) {
+                current = current.flatMap(item => item.result);
+            }
+
+            // Sometimes responses are nested one more level per chunk
+            if (Array.isArray(current) && current.length > 0 && current.every(Array.isArray)) {
+                current = current.flat();
+            }
+
+            if (Array.isArray(current)) return current;
+            return null;
+        }
+
+        function getRootArray(parsed) {
+            const candidates = [
+                parsed,
+                parsed && parsed.result,
+                parsed && parsed.data,
+                parsed && parsed.result && parsed.result.result,
+                parsed && parsed.data && parsed.data.result
+            ];
+
+            for (const candidate of candidates) {
+                const arr = normalizeArrayCandidate(candidate);
+                if (Array.isArray(arr)) return arr;
+            }
+
             return null;
         }
 
