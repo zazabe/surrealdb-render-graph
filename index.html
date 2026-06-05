@@ -7,7 +7,6 @@
     
     <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.1/dist/graphology.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sigma@2.4.0/build/sigma.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.umd.min.js"></script>
 
     <style>
         body {
@@ -202,10 +201,11 @@
 
     <div id="container"></div>
 
-    <script>
+    <script type="module">
         let graphInstance = null;
         let rendererInstance = null;
         let rawData = null;
+        let forceAtlas2Lib = null;
 
         const fileInput = document.getElementById('file-input');
         const layoutBtn = document.getElementById('layout-btn');
@@ -224,6 +224,13 @@
             block: "#ffa502",    // Amber Gold
             default: "#a4b0be"   // Muted Silver
         };
+
+        async function getForceAtlas2() {
+            if (forceAtlas2Lib) return forceAtlas2Lib;
+            const module = await import("https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/+esm");
+            forceAtlas2Lib = module.default;
+            return forceAtlas2Lib;
+        }
 
         function getRootArray(parsed) {
             if (Array.isArray(parsed)) {
@@ -352,7 +359,7 @@
             });
 
             // Instantiate Sigma renderer viewport
-            rendererInstance = new Sigma(graphInstance, document.getElementById('container'), {
+            rendererInstance = new window.Sigma(graphInstance, document.getElementById('container'), {
                 allowInvalidContainer: true,
                 labelColor: { color: "#ffffff" },
                 edgeColor: "default"
@@ -366,19 +373,26 @@
         }
 
         // 3. Physics Layout Spatialize Processor
-        layoutBtn.addEventListener('click', () => {
+        layoutBtn.addEventListener('click', async () => {
             if (!graphInstance) return;
             status.innerText = "Status: Running layout calculation...";
             
-            // Run ForceAtlas2 spatialization mapping configurations
-            window.forceAtlas2.assign(graphInstance, {
-                iterations: 250,
-                settings: {
-                    gravity: 0.5,
-                    barnesHutOptimize: true,
-                    scalingRatio: 18
-                }
-            });
+            try {
+                const forceAtlas2 = await getForceAtlas2();
+                // Run ForceAtlas2 spatialization mapping configurations
+                forceAtlas2.assign(graphInstance, {
+                    iterations: 250,
+                    settings: {
+                        gravity: 0.5,
+                        barnesHutOptimize: true,
+                        scalingRatio: 18
+                    }
+                });
+            } catch (err) {
+                status.innerText = "❌ Could not load ForceAtlas2 layout dependency.";
+                console.error(err);
+                return;
+            }
 
             rendererInstance.refresh();
             status.innerText = "✅ Layout optimization process complete!";
