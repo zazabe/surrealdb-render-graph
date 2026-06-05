@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SurrealDB Graph Visualizer</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.1/dist/graphology.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sigma@2.4.0/build/sigma.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.umd.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: #111217;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            color: #fff;
+        }
+
+        #control-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(24, 26, 32, 0.9);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            border: 1px solid #2e323e;
+            max-width: 360px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+        }
+
+        h3 { margin-top: 0; margin-bottom: 12px; font-size: 16px; color: #00bfff; }
+        h4 { margin: 14px 0 8px; font-size: 13px; color: #d2dae2; }
+        p {
+            margin: 6px 0;
+            font-size: 12px;
+            color: #c8d6e5;
+            line-height: 1.45;
+        }
+        .muted { color: #8ea0b5; }
+        
+        .btn {
+            background: #00bfff;
+            color: #111217;
+            border: none;
+            padding: 10px 15px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #0099cc; }
+        .btn:disabled { background: #444; color: #888; cursor: not-allowed; }
+
+        #file-input {
+            margin-bottom: 10px;
+            color: #ccc;
+            font-size: 12px;
+            width: 100%;
+        }
+
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        #status {
+            font-size: 12px;
+            color: #a4b0be;
+            margin-top: 8px;
+            font-family: monospace;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .field {
+            flex: 1;
+        }
+        .field label {
+            display: block;
+            font-size: 11px;
+            color: #a4b0be;
+            margin-bottom: 4px;
+        }
+        .field input {
+            width: 100%;
+            box-sizing: border-box;
+            background: #1f2430;
+            color: #fff;
+            border: 1px solid #394150;
+            border-radius: 4px;
+            padding: 8px;
+        }
+
+        #preview-wrap {
+            margin-top: 12px;
+            background: rgba(11, 13, 18, 0.85);
+            border: 1px solid #2e323e;
+            border-radius: 6px;
+            padding: 8px;
+        }
+        #preview-canvas {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 4px;
+            background: #0f1117;
+        }
+        #preview-meta {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #8ea0b5;
+        }
+
+        details {
+            margin-top: 12px;
+            border: 1px solid #2e323e;
+            border-radius: 6px;
+            padding: 8px 10px;
+            background: rgba(11, 13, 18, 0.7);
+        }
+        summary {
+            cursor: pointer;
+            color: #d2dae2;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        pre {
+            margin: 8px 0 4px;
+            font-size: 11px;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            color: #c8d6e5;
+            background: #161a23;
+            border: 1px solid #2a3040;
+            border-radius: 4px;
+            padding: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="control-panel">
+        <h3>SurrealDB Graph Export</h3>
+        <label for="file-input">Upload your query JSON export:</label>
+        <input type="file" id="file-input" accept=".json" />
+
+        <h4>Export resolution</h4>
+        <div class="row">
+            <div class="field">
+                <label for="width-input">Width (px)</label>
+                <input id="width-input" type="number" min="256" max="20000" step="256" value="10000" />
+            </div>
+            <div class="field">
+                <label for="height-input">Height (px)</label>
+                <input id="height-input" type="number" min="256" max="20000" step="256" value="10000" />
+            </div>
+        </div>
+
+        <button id="layout-btn" class="btn" disabled>Optimize Physics Layout</button>
+        <button id="preview-btn" class="btn" disabled>Refresh Export Preview</button>
+        <button id="snap-btn" class="btn" disabled>Export PNG</button>
+
+        <div id="preview-wrap">
+            <canvas id="preview-canvas" width="320" height="220"></canvas>
+            <div id="preview-meta">Preview: waiting for graph…</div>
+        </div>
+
+        <div id="status">Status: Waiting for file...</div>
+
+        <details>
+            <summary>How to shape your SurrealDB query</summary>
+            <p>Return a <strong>single array</strong> that mixes node rows and edge rows.</p>
+            <p class="muted">Node row: <code>{ id, label }</code> (or <code>title/text</code> as label fallback)</p>
+            <p class="muted">Edge row: <code>{ id, in, out, label }</code></p>
+<pre>RETURN array::concat(
+    -- Nodes
+    (SELECT id, title AS label FROM your_node_table),
+    (SELECT id, text  AS label FROM another_node_table),
+
+    -- Edges / relations
+    (SELECT id, in, out, 'relation_name' AS label FROM your_relation_table)
+);</pre>
+            <p class="muted">Tip: each node <code>id</code> should be unique (e.g. <code>document:1</code>), and edge <code>in/out</code> should point to existing node ids.</p>
+        </details>
+    </div>
+
+    <div id="container"></div>
+
+    <script>
+        let graphInstance = null;
+        let rendererInstance = null;
+        let rawData = null;
+
+        const fileInput = document.getElementById('file-input');
+        const layoutBtn = document.getElementById('layout-btn');
+        const previewBtn = document.getElementById('preview-btn');
+        const snapBtn = document.getElementById('snap-btn');
+        const status = document.getElementById('status');
+        const widthInput = document.getElementById('width-input');
+        const heightInput = document.getElementById('height-input');
+        const previewCanvas = document.getElementById('preview-canvas');
+        const previewMeta = document.getElementById('preview-meta');
+
+        const colors = {
+            document: "#ff4757", // Rose Red
+            heading: "#2ed573",  // Neon Mint
+            section: "#1e90ff",  // Electric Blue
+            block: "#ffa502",    // Amber Gold
+            default: "#a4b0be"   // Muted Silver
+        };
+
+        function getRootArray(parsed) {
+            if (Array.isArray(parsed)) {
+                if (parsed.length === 1 && parsed[0] && Array.isArray(parsed[0].result)) {
+                    return parsed[0].result;
+                }
+                return parsed;
+            }
+            if (Array.isArray(parsed.result)) return parsed.result;
+            if (Array.isArray(parsed.data)) return parsed.data;
+            if (parsed.result && Array.isArray(parsed.result.result)) return parsed.result.result;
+            return null;
+        }
+
+        function getExportSize() {
+            const width = Number.parseInt(widthInput.value, 10);
+            const height = Number.parseInt(heightInput.value, 10);
+            const safeWidth = Number.isFinite(width) ? Math.max(256, Math.min(20000, width)) : 10000;
+            const safeHeight = Number.isFinite(height) ? Math.max(256, Math.min(20000, height)) : 10000;
+            widthInput.value = String(safeWidth);
+            heightInput.value = String(safeHeight);
+            return { width: safeWidth, height: safeHeight };
+        }
+
+        function updateExportButtonLabel() {
+            const { width, height } = getExportSize();
+            snapBtn.textContent = `Export ${width}x${height} PNG`;
+            previewMeta.textContent = `Preview target: ${width}x${height}px`;
+        }
+
+        function drawPreview() {
+            const ctx = previewCanvas.getContext('2d');
+            if (!ctx) return;
+            const canvases = document.querySelectorAll('#container canvas');
+            ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            ctx.fillStyle = '#0f1117';
+            ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+
+            if (!canvases.length) {
+                previewMeta.textContent = 'Preview: waiting for graph…';
+                return;
+            }
+
+            canvases.forEach(c => ctx.drawImage(c, 0, 0, previewCanvas.width, previewCanvas.height));
+            const { width, height } = getExportSize();
+            previewMeta.textContent = `Preview target: ${width}x${height}px (${graphInstance.order} nodes, ${graphInstance.size} edges)`;
+        }
+
+        widthInput.addEventListener('change', updateExportButtonLabel);
+        heightInput.addEventListener('change', updateExportButtonLabel);
+        updateExportButtonLabel();
+
+        // 1. File Upload Processing
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            status.innerText = "Status: Reading file...";
+            
+            reader.onload = (event) => {
+                try {
+                    const parsed = JSON.parse(event.target.result);
+                    rawData = getRootArray(parsed);
+                    
+                    if (!Array.isArray(rawData)) {
+                        throw new Error("JSON should contain an array of nodes + edges.");
+                    }
+                    
+                    buildGraphNetwork(rawData);
+                } catch (err) {
+                    status.innerText = "❌ Error processing JSON: " + err.message;
+                    console.error(err);
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // 2. Build the Graphology Model and Mount Sigma
+        function buildGraphNetwork(data) {
+            status.innerText = "Status: Indexing fields...";
+            
+            // Wipe out old renderers if users load files sequentially
+            document.getElementById('container').innerHTML = '';
+            
+            const Graph = window.graphology.Graph;
+            graphInstance = new Graph();
+
+            // Pass 1: Build Unique Nodes
+            data.forEach(item => {
+                if (item && item.id && !item.in && !item.out) {
+                    const collection = item.id.split(':')[0];
+                    graphInstance.addNode(item.id, {
+                        label: item.label || item.title || item.heading || item.id,
+                        x: Math.random() * 500,
+                        y: Math.random() * 500,
+                        size: collection === 'document' ? 14 : 7,
+                        color: colors[collection] || colors.default
+                    });
+                }
+            });
+
+            // Pass 2: Connect structural Edge Relations
+            data.forEach(item => {
+                if (item && item.in && item.out) {
+                    [item.in, item.out].forEach(nodeId => {
+                        if (!graphInstance.hasNode(nodeId)) {
+                            const collection = nodeId.split(':')[0];
+                            graphInstance.addNode(nodeId, {
+                                label: nodeId,
+                                x: Math.random() * 500,
+                                y: Math.random() * 500,
+                                size: 6,
+                                color: colors[collection] || colors.default
+                            });
+                        }
+                    });
+
+                    try {
+                        graphInstance.addEdge(item.out, item.in, {
+                            size: 1.5,
+                            color: "rgba(255, 255, 255, 0.15)"
+                        });
+                    } catch(e) {}
+                }
+            });
+
+            // Instantiate Sigma renderer viewport
+            rendererInstance = new Sigma(graphInstance, document.getElementById('container'), {
+                allowInvalidContainer: true,
+                labelColor: { color: "#ffffff" },
+                edgeColor: "default"
+            });
+
+            status.innerText = `✅ Loaded: ${graphInstance.order} nodes, ${graphInstance.size} edges.`;
+            layoutBtn.disabled = false;
+            previewBtn.disabled = false;
+            snapBtn.disabled = false;
+            drawPreview();
+        }
+
+        // 3. Physics Layout Spatialize Processor
+        layoutBtn.addEventListener('click', () => {
+            if (!graphInstance) return;
+            status.innerText = "Status: Running layout calculation...";
+            
+            // Run ForceAtlas2 spatialization mapping configurations
+            window.forceAtlas2.assign(graphInstance, {
+                iterations: 250,
+                settings: {
+                    gravity: 0.5,
+                    barnesHutOptimize: true,
+                    scalingRatio: 18
+                }
+            });
+
+            rendererInstance.refresh();
+            status.innerText = "✅ Layout optimization process complete!";
+            drawPreview();
+        });
+
+        previewBtn.addEventListener('click', () => {
+            if (!rendererInstance) return;
+            drawPreview();
+            status.innerText = "✅ Preview updated.";
+        });
+
+        // 4. Custom high-resolution export
+        snapBtn.addEventListener('click', async () => {
+            if (!rendererInstance) return;
+            
+            const { width: WIDTH, height: HEIGHT } = getExportSize();
+            if ((WIDTH * HEIGHT) > 220000000) {
+                status.innerText = "❌ Resolution too large for browser memory. Try fewer total pixels.";
+                return;
+            }
+            status.innerText = `⚙️ Printing massive ${WIDTH}x${HEIGHT} artifact file...`;
+
+            const canvases = document.querySelectorAll('#container canvas');
+            
+            // Buffer resize constraints to absolute allocation layout ceilings
+            canvases.forEach(c => {
+                c.style.width = `${WIDTH}px`; c.style.height = `${HEIGHT}px`;
+                c.width = WIDTH; c.height = HEIGHT;
+            });
+            
+            rendererInstance.refresh();
+            // Wait for GPU buffer threads to resolve layout updates
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const composite = document.createElement('canvas');
+            composite.width = WIDTH;
+            composite.height = HEIGHT;
+            const ctx = composite.getContext('2d');
+            
+            // Layer aggregation execution loop (background layer -> nodes -> labels)
+            canvases.forEach(c => ctx.drawImage(c, 0, 0));
+
+            // Prompt download interaction out of sandbox window thread context
+            const link = document.createElement('a');
+            link.download = `surrealdb_graph_network_${WIDTH}x${HEIGHT}.png`;
+            link.href = composite.toDataURL('image/png');
+            link.click();
+            
+            status.innerText = "💾 High-res PNG file downloaded successfully!";
+            
+            // Soft reset window view size to normal desktop tracking context
+            canvases.forEach(c => {
+                c.style.width = "100%"; c.style.height = "100%";
+                c.removeAttribute('width'); c.removeAttribute('height');
+            });
+            rendererInstance.refresh();
+            drawPreview();
+        });
+    </script>
+</body>
+</html>
