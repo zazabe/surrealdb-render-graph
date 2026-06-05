@@ -864,6 +864,71 @@
             status.innerText = "✅ Layout optimization process complete!";
         });
 
+        function renderCurrentViewportToExportCanvas(targetCanvas, targetWidth, targetHeight) {
+            if (!rendererInstance || !graphInstance) return false;
+
+            const rect = document.getElementById('container').getBoundingClientRect();
+            const viewportWidth = Math.max(1, rect.width);
+            const viewportHeight = Math.max(1, rect.height);
+
+            targetCanvas.width = targetWidth;
+            targetCanvas.height = targetHeight;
+            const ctx = targetCanvas.getContext('2d');
+            if (!ctx) return false;
+
+            ctx.fillStyle = '#0f1117';
+            ctx.fillRect(0, 0, targetWidth, targetHeight);
+
+            // Preserve aspect ratio to avoid stretched exports.
+            const scale = Math.min(targetWidth / viewportWidth, targetHeight / viewportHeight);
+            const offsetX = (targetWidth - viewportWidth * scale) / 2;
+            const offsetY = (targetHeight - viewportHeight * scale) / 2;
+
+            const displayNodes = new Map();
+            graphInstance.forEachNode((nodeId, attrs) => {
+                const display = rendererInstance.getNodeDisplayData(nodeId);
+                if (!display || !Number.isFinite(display.x) || !Number.isFinite(display.y)) return;
+                displayNodes.set(nodeId, {
+                    x: display.x * scale + offsetX,
+                    y: display.y * scale + offsetY,
+                    size: Math.max(1, (display.size || attrs.size || 4) * scale),
+                    color: attrs.color || display.color || colors.default,
+                    label: attrs.label || nodeId
+                });
+            });
+
+            if (!displayNodes.size) return false;
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+            ctx.lineWidth = Math.max(0.8, 1.2 * scale);
+            ctx.beginPath();
+            graphInstance.forEachEdge((edgeId, edgeAttrs, source, target) => {
+                const sourceNode = displayNodes.get(source);
+                const targetNode = displayNodes.get(target);
+                if (!sourceNode || !targetNode) return;
+                ctx.moveTo(sourceNode.x, sourceNode.y);
+                ctx.lineTo(targetNode.x, targetNode.y);
+            });
+            ctx.stroke();
+
+            displayNodes.forEach((node) => {
+                ctx.beginPath();
+                ctx.fillStyle = node.color;
+                ctx.arc(node.x, node.y, node.size, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            if (labelsToggle.checked) {
+                ctx.fillStyle = "#eaf1ff";
+                ctx.font = `${Math.max(10, Math.floor(12 * scale))}px sans-serif`;
+                displayNodes.forEach((node) => {
+                    ctx.fillText(String(node.label), node.x + Math.max(4, 4 * scale), node.y - Math.max(4, 4 * scale));
+                });
+            }
+
+            return true;
+        }
+
         // 4. Custom high-resolution export
         snapBtn.addEventListener('click', async () => {
             if (!rendererInstance) return;
@@ -875,44 +940,12 @@
             }
             status.innerText = `⚙️ Printing massive ${WIDTH}x${HEIGHT} artifact file...`;
 
-            const layerCanvases = Array.from(document.querySelectorAll('#container canvas'));
-            if (!layerCanvases.length) {
-                status.innerText = "❌ Could not find renderer canvas layers.";
-                return;
-            }
-
-            const sourceWidth = layerCanvases[0].width;
-            const sourceHeight = layerCanvases[0].height;
-            if (!sourceWidth || !sourceHeight) {
-                status.innerText = "❌ Renderer canvas is not ready yet.";
-                return;
-            }
-
-            const source = document.createElement('canvas');
-            source.width = sourceWidth;
-            source.height = sourceHeight;
-            const sourceCtx = source.getContext('2d');
-            if (!sourceCtx) {
-                status.innerText = "❌ Could not create export context.";
-                return;
-            }
-            sourceCtx.fillStyle = '#0f1117';
-            sourceCtx.fillRect(0, 0, sourceWidth, sourceHeight);
-            layerCanvases.forEach((canvasLayer) => {
-                sourceCtx.drawImage(canvasLayer, 0, 0, sourceWidth, sourceHeight);
-            });
-
             const composite = document.createElement('canvas');
-            composite.width = WIDTH;
-            composite.height = HEIGHT;
-            const compositeCtx = composite.getContext('2d');
-            if (!compositeCtx) {
-                status.innerText = "❌ Could not create export context.";
+            const ok = renderCurrentViewportToExportCanvas(composite, WIDTH, HEIGHT);
+            if (!ok) {
+                status.innerText = "❌ Export failed. Try moving/zooming the graph first, then retry.";
                 return;
             }
-            compositeCtx.fillStyle = '#0f1117';
-            compositeCtx.fillRect(0, 0, WIDTH, HEIGHT);
-            compositeCtx.drawImage(source, 0, 0, WIDTH, HEIGHT);
 
             // Prompt download interaction out of sandbox window thread context
             const link = document.createElement('a');
