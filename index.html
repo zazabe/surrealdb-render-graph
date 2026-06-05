@@ -105,6 +105,42 @@
             border-radius: 4px;
             padding: 8px;
         }
+        .field select {
+            width: 100%;
+            box-sizing: border-box;
+            background: #1f2430;
+            color: #fff;
+            border: 1px solid #394150;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        .field input[type="color"] {
+            padding: 0;
+            height: 36px;
+            border: 1px solid #394150;
+        }
+        .field input[type="range"] {
+            padding: 0;
+        }
+        .inline-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+            font-size: 12px;
+            color: #d2dae2;
+        }
+        .value-pill {
+            display: inline-block;
+            min-width: 38px;
+            text-align: center;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: #1f2430;
+            color: #9cc2ff;
+            font-size: 11px;
+            margin-left: 6px;
+        }
 
         #preview-wrap {
             margin-top: 12px;
@@ -171,6 +207,50 @@
             </div>
         </div>
 
+        <h4>Layout & appearance</h4>
+        <div class="row">
+            <div class="field">
+                <label for="layout-spacing-input">Node spacing <span id="layout-spacing-value" class="value-pill">2.0x</span></label>
+                <input id="layout-spacing-input" type="range" min="1" max="6" step="0.2" value="2" />
+            </div>
+            <div class="field">
+                <label for="layout-iterations-input">Layout iterations</label>
+                <input id="layout-iterations-input" type="number" min="50" max="2000" step="50" value="350" />
+            </div>
+        </div>
+        <div class="row">
+            <div class="field">
+                <label for="node-size-input">Node size <span id="node-size-value" class="value-pill">1.0x</span></label>
+                <input id="node-size-input" type="range" min="0.6" max="3" step="0.1" value="1" />
+            </div>
+            <div class="field">
+                <label for="max-label-chars-input">Label max chars</label>
+                <input id="max-label-chars-input" type="number" min="6" max="1000" step="1" value="80" />
+            </div>
+        </div>
+        <div class="row">
+            <div class="field">
+                <label for="color-mode-input">Node color mode</label>
+                <select id="color-mode-input">
+                    <option value="collection" selected>By collection</option>
+                    <option value="single">Single color</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="single-color-input">Single node color</label>
+                <input id="single-color-input" type="color" value="#00bfff" />
+            </div>
+        </div>
+        <label class="inline-toggle">
+            <input type="checkbox" id="labels-toggle" checked />
+            Show labels
+        </label>
+        <label class="inline-toggle">
+            <input type="checkbox" id="live-layout-toggle" />
+            Live layout while dragging
+        </label>
+        <p class="muted">Tip: drag nodes directly in the graph view to place them manually.</p>
+
         <button id="layout-btn" class="btn" disabled>Optimize Physics Layout</button>
         <button id="preview-btn" class="btn" disabled>Refresh Export Preview</button>
         <button id="snap-btn" class="btn" disabled>Export PNG</button>
@@ -214,8 +294,21 @@
         const status = document.getElementById('status');
         const widthInput = document.getElementById('width-input');
         const heightInput = document.getElementById('height-input');
+        const layoutSpacingInput = document.getElementById('layout-spacing-input');
+        const layoutSpacingValue = document.getElementById('layout-spacing-value');
+        const layoutIterationsInput = document.getElementById('layout-iterations-input');
+        const nodeSizeInput = document.getElementById('node-size-input');
+        const nodeSizeValue = document.getElementById('node-size-value');
+        const maxLabelCharsInput = document.getElementById('max-label-chars-input');
+        const colorModeInput = document.getElementById('color-mode-input');
+        const singleColorInput = document.getElementById('single-color-input');
+        const labelsToggle = document.getElementById('labels-toggle');
+        const liveLayoutToggle = document.getElementById('live-layout-toggle');
         const previewCanvas = document.getElementById('preview-canvas');
         const previewMeta = document.getElementById('preview-meta');
+        let previewDrawPending = false;
+        let liveLayoutTimer = null;
+        let liveLayoutTickRunning = false;
 
         const colors = {
             document: "#ff4757", // Rose Red
@@ -230,6 +323,154 @@
             const module = await import("https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/+esm");
             forceAtlas2Lib = module.default;
             return forceAtlas2Lib;
+        }
+
+        function readNumber(input, fallback, min, max) {
+            const raw = Number.parseFloat(input.value);
+            const safe = Number.isFinite(raw) ? raw : fallback;
+            const clamped = Math.max(min, Math.min(max, safe));
+            input.value = String(clamped);
+            return clamped;
+        }
+
+        function getDisplayLabel(rawLabel) {
+            const text = String(rawLabel || "");
+            const maxChars = Math.floor(readNumber(maxLabelCharsInput, 80, 6, 1000));
+            if (text.length <= maxChars) return text;
+            return `${text.slice(0, maxChars - 1)}…`;
+        }
+
+        function getNodeColor(collection) {
+            if (colorModeInput.value === "single") return singleColorInput.value;
+            return colors[collection] || colors.default;
+        }
+
+        function updateControlPills() {
+            const spacing = readNumber(layoutSpacingInput, 2, 1, 6);
+            const nodeScale = readNumber(nodeSizeInput, 1, 0.6, 3);
+            layoutSpacingValue.textContent = `${spacing.toFixed(1)}x`;
+            nodeSizeValue.textContent = `${nodeScale.toFixed(1)}x`;
+        }
+
+        function schedulePreviewDraw() {
+            if (previewDrawPending) return;
+            previewDrawPending = true;
+            requestAnimationFrame(() => {
+                previewDrawPending = false;
+                drawPreview();
+            });
+        }
+
+        function applyAppearanceSettings() {
+            if (!graphInstance) return;
+            const nodeScale = readNumber(nodeSizeInput, 1, 0.6, 3);
+
+            graphInstance.updateEachNodeAttributes((nodeId, attrs) => {
+                const fullLabel = attrs.fullLabel || attrs.label || nodeId;
+                const baseSize = attrs.baseSize || attrs.size || 6;
+                const collection = attrs.collection || String(nodeId).split(':')[0];
+                return {
+                    ...attrs,
+                    fullLabel,
+                    label: getDisplayLabel(fullLabel),
+                    color: getNodeColor(collection),
+                    size: Math.max(1.2, baseSize * nodeScale)
+                };
+            });
+
+            if (rendererInstance) {
+                rendererInstance.setSetting("renderLabels", !!labelsToggle.checked);
+                rendererInstance.refresh();
+            }
+            schedulePreviewDraw();
+        }
+
+        function stopLiveLayoutLoop() {
+            if (liveLayoutTimer) {
+                clearInterval(liveLayoutTimer);
+                liveLayoutTimer = null;
+            }
+            liveLayoutTickRunning = false;
+        }
+
+        function getLayoutParams() {
+            const spacing = readNumber(layoutSpacingInput, 2, 1, 6);
+            const iterations = Math.floor(readNumber(layoutIterationsInput, 350, 50, 2000));
+            return {
+                spacing,
+                iterations,
+                settings: {
+                    gravity: Math.max(0.05, 0.45 / spacing),
+                    barnesHutOptimize: true,
+                    scalingRatio: 9 * spacing
+                }
+            };
+        }
+
+        function startLiveLayoutLoop(isDraggingRef) {
+            stopLiveLayoutLoop();
+            if (!liveLayoutToggle.checked) return;
+            if (!graphInstance || !rendererInstance) return;
+
+            liveLayoutTimer = setInterval(async () => {
+                if (!isDraggingRef()) return;
+                if (liveLayoutTickRunning) return;
+                liveLayoutTickRunning = true;
+
+                try {
+                    const forceAtlas2 = await getForceAtlas2();
+                    const { settings } = getLayoutParams();
+                    forceAtlas2.assign(graphInstance, {
+                        iterations: 6,
+                        settings
+                    });
+                    rendererInstance.refresh();
+                    schedulePreviewDraw();
+                } catch (err) {
+                    console.error(err);
+                    stopLiveLayoutLoop();
+                } finally {
+                    liveLayoutTickRunning = false;
+                }
+            }, 120);
+        }
+
+        function setupNodeDragging() {
+            if (!rendererInstance || !graphInstance) return;
+
+            let draggedNode = null;
+            let isDragging = false;
+            const mouseCaptor = rendererInstance.getMouseCaptor();
+
+            rendererInstance.on("downNode", ({ node, event }) => {
+                isDragging = true;
+                draggedNode = node;
+                rendererInstance.getCamera().disable();
+                event.preventSigmaDefault();
+                startLiveLayoutLoop(() => isDragging);
+            });
+
+            mouseCaptor.on("mousemovebody", (e) => {
+                if (!isDragging || !draggedNode) return;
+                const position = rendererInstance.viewportToGraph(e);
+                graphInstance.setNodeAttribute(draggedNode, "x", position.x);
+                graphInstance.setNodeAttribute(draggedNode, "y", position.y);
+                e.preventSigmaDefault();
+                if (e.original) {
+                    e.original.preventDefault();
+                    e.original.stopPropagation();
+                }
+                rendererInstance.refresh();
+                schedulePreviewDraw();
+            });
+
+            mouseCaptor.on("mouseup", () => {
+                if (!draggedNode) return;
+                isDragging = false;
+                draggedNode = null;
+                stopLiveLayoutLoop();
+                rendererInstance.getCamera().enable();
+            });
         }
 
         function normalizeArrayCandidate(candidate) {
@@ -373,7 +614,7 @@
                 ctx.fill();
             });
 
-            const showLabels = graphInstance.order <= 250 && width <= 2000;
+            const showLabels = labelsToggle.checked && graphInstance.order <= 1200 && width <= 4000;
             if (showLabels) {
                 ctx.font = `${Math.max(10, Math.floor(width / 120))}px sans-serif`;
                 ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
@@ -395,7 +636,26 @@
 
         widthInput.addEventListener('change', updateExportButtonLabel);
         heightInput.addEventListener('change', updateExportButtonLabel);
+        layoutSpacingInput.addEventListener('input', updateControlPills);
+        nodeSizeInput.addEventListener('input', () => {
+            updateControlPills();
+            applyAppearanceSettings();
+        });
+        maxLabelCharsInput.addEventListener('change', applyAppearanceSettings);
+        colorModeInput.addEventListener('change', () => {
+            singleColorInput.disabled = colorModeInput.value !== "single";
+            applyAppearanceSettings();
+        });
+        singleColorInput.addEventListener('input', applyAppearanceSettings);
+        labelsToggle.addEventListener('change', applyAppearanceSettings);
+        liveLayoutToggle.addEventListener('change', () => {
+            if (!liveLayoutToggle.checked) {
+                stopLiveLayoutLoop();
+            }
+        });
         updateExportButtonLabel();
+        updateControlPills();
+        singleColorInput.disabled = true;
 
         // 1. File Upload Processing
         fileInput.addEventListener('change', (e) => {
@@ -428,6 +688,10 @@
             status.innerText = "Status: Indexing fields...";
             
             // Wipe out old renderers if users load files sequentially
+            stopLiveLayoutLoop();
+            if (rendererInstance) {
+                rendererInstance.kill();
+            }
             document.getElementById('container').innerHTML = '';
             
             const Graph = window.graphology.Graph;
@@ -437,12 +701,17 @@
             data.forEach(item => {
                 if (item && item.id && !item.in && !item.out) {
                     const collection = item.id.split(':')[0];
+                    const fullLabel = item.label || item.title || item.heading || item.id;
+                    const baseSize = collection === 'document' ? 14 : 7;
                     graphInstance.addNode(item.id, {
-                        label: item.label || item.title || item.heading || item.id,
+                        fullLabel,
+                        label: getDisplayLabel(fullLabel),
                         x: Math.random() * 500,
                         y: Math.random() * 500,
-                        size: collection === 'document' ? 14 : 7,
-                        color: colors[collection] || colors.default
+                        baseSize,
+                        size: Math.max(1.2, baseSize * readNumber(nodeSizeInput, 1, 0.6, 3)),
+                        color: getNodeColor(collection),
+                        collection
                     });
                 }
             });
@@ -453,12 +722,16 @@
                     [item.in, item.out].forEach(nodeId => {
                         if (!graphInstance.hasNode(nodeId)) {
                             const collection = nodeId.split(':')[0];
+                            const baseSize = 6;
                             graphInstance.addNode(nodeId, {
-                                label: nodeId,
+                                fullLabel: nodeId,
+                                label: getDisplayLabel(nodeId),
                                 x: Math.random() * 500,
                                 y: Math.random() * 500,
-                                size: 6,
-                                color: colors[collection] || colors.default
+                                baseSize,
+                                size: Math.max(1.2, baseSize * readNumber(nodeSizeInput, 1, 0.6, 3)),
+                                color: getNodeColor(collection),
+                                collection
                             });
                         }
                     });
@@ -475,9 +748,11 @@
             // Instantiate Sigma renderer viewport
             rendererInstance = new window.Sigma(graphInstance, document.getElementById('container'), {
                 allowInvalidContainer: true,
+                renderLabels: !!labelsToggle.checked,
                 labelColor: { color: "#ffffff" },
                 edgeColor: "default"
             });
+            setupNodeDragging();
 
             status.innerText = `✅ Loaded: ${graphInstance.order} nodes, ${graphInstance.size} edges.`;
             layoutBtn.disabled = false;
@@ -493,14 +768,11 @@
             
             try {
                 const forceAtlas2 = await getForceAtlas2();
+                const { iterations, settings } = getLayoutParams();
                 // Run ForceAtlas2 spatialization mapping configurations
                 forceAtlas2.assign(graphInstance, {
-                    iterations: 250,
-                    settings: {
-                        gravity: 0.5,
-                        barnesHutOptimize: true,
-                        scalingRatio: 18
-                    }
+                    iterations,
+                    settings
                 });
             } catch (err) {
                 status.innerText = "❌ Could not load ForceAtlas2 layout dependency.";
