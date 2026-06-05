@@ -261,20 +261,107 @@
             previewMeta.textContent = `Preview target: ${width}x${height}px`;
         }
 
-        function drawPreview() {
-            const ctx = previewCanvas.getContext('2d');
-            if (!ctx) return;
-            const canvases = document.querySelectorAll('#container canvas');
-            ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-            ctx.fillStyle = '#0f1117';
-            ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+        function getGraphBounds() {
+            let minX = Infinity;
+            let maxX = -Infinity;
+            let minY = Infinity;
+            let maxY = -Infinity;
 
-            if (!canvases.length) {
+            graphInstance.forEachNode((_, attrs) => {
+                minX = Math.min(minX, attrs.x);
+                maxX = Math.max(maxX, attrs.x);
+                minY = Math.min(minY, attrs.y);
+                maxY = Math.max(maxY, attrs.y);
+            });
+
+            if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+                return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+            }
+
+            if (minX === maxX) {
+                minX -= 1;
+                maxX += 1;
+            }
+            if (minY === maxY) {
+                minY -= 1;
+                maxY += 1;
+            }
+
+            return { minX, maxX, minY, maxY };
+        }
+
+        function renderGraphToCanvas(canvas, width, height) {
+            if (!graphInstance) return;
+
+            canvas.width = width;
+            canvas.height = height;
+
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+
+            ctx.fillStyle = '#0f1117';
+            ctx.fillRect(0, 0, width, height);
+
+            const bounds = getGraphBounds();
+            const padding = Math.max(20, Math.min(width, height) * 0.06);
+            const graphWidth = bounds.maxX - bounds.minX;
+            const graphHeight = bounds.maxY - bounds.minY;
+            const scale = Math.min(
+                (width - padding * 2) / graphWidth,
+                (height - padding * 2) / graphHeight
+            );
+
+            const offsetX = (width - graphWidth * scale) / 2;
+            const offsetY = (height - graphHeight * scale) / 2;
+            const pointCache = new Map();
+
+            graphInstance.forEachNode((id, attrs) => {
+                pointCache.set(id, {
+                    x: (attrs.x - bounds.minX) * scale + offsetX,
+                    y: (attrs.y - bounds.minY) * scale + offsetY,
+                    color: attrs.color || colors.default,
+                    size: attrs.size || 6,
+                    label: attrs.label || id
+                });
+            });
+
+            const edgeWidth = Math.max(0.7, Math.min(2.2, width / 1800));
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+            ctx.lineWidth = edgeWidth;
+            ctx.beginPath();
+            graphInstance.forEachEdge((_, __, source, target) => {
+                const a = pointCache.get(source);
+                const b = pointCache.get(target);
+                if (!a || !b) return;
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+            });
+            ctx.stroke();
+
+            const nodeScale = Math.max(1, Math.min(3.5, width / 1200));
+            pointCache.forEach((node) => {
+                ctx.beginPath();
+                ctx.fillStyle = node.color;
+                ctx.arc(node.x, node.y, Math.max(1.5, node.size * nodeScale), 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            const showLabels = graphInstance.order <= 250 && width <= 2000;
+            if (showLabels) {
+                ctx.font = `${Math.max(10, Math.floor(width / 120))}px sans-serif`;
+                ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
+                pointCache.forEach((node) => {
+                    ctx.fillText(String(node.label), node.x + 5, node.y - 5);
+                });
+            }
+        }
+
+        function drawPreview() {
+            if (!graphInstance) {
                 previewMeta.textContent = 'Preview: waiting for graph…';
                 return;
             }
-
-            canvases.forEach(c => ctx.drawImage(c, 0, 0, previewCanvas.width, previewCanvas.height));
+            renderGraphToCanvas(previewCanvas, previewCanvas.width, previewCanvas.height);
             const { width, height } = getExportSize();
             previewMeta.textContent = `Preview target: ${width}x${height}px (${graphInstance.order} nodes, ${graphInstance.size} edges)`;
         }
@@ -416,25 +503,8 @@
             }
             status.innerText = `⚙️ Printing massive ${WIDTH}x${HEIGHT} artifact file...`;
 
-            const canvases = document.querySelectorAll('#container canvas');
-            
-            // Buffer resize constraints to absolute allocation layout ceilings
-            canvases.forEach(c => {
-                c.style.width = `${WIDTH}px`; c.style.height = `${HEIGHT}px`;
-                c.width = WIDTH; c.height = HEIGHT;
-            });
-            
-            rendererInstance.refresh();
-            // Wait for GPU buffer threads to resolve layout updates
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
             const composite = document.createElement('canvas');
-            composite.width = WIDTH;
-            composite.height = HEIGHT;
-            const ctx = composite.getContext('2d');
-            
-            // Layer aggregation execution loop (background layer -> nodes -> labels)
-            canvases.forEach(c => ctx.drawImage(c, 0, 0));
+            renderGraphToCanvas(composite, WIDTH, HEIGHT);
 
             // Prompt download interaction out of sandbox window thread context
             const link = document.createElement('a');
@@ -443,13 +513,6 @@
             link.click();
             
             status.innerText = "💾 High-res PNG file downloaded successfully!";
-            
-            // Soft reset window view size to normal desktop tracking context
-            canvases.forEach(c => {
-                c.style.width = "100%"; c.style.height = "100%";
-                c.removeAttribute('width'); c.removeAttribute('height');
-            });
-            rendererInstance.refresh();
             drawPreview();
         });
     </script>
