@@ -142,26 +142,6 @@
             margin-left: 6px;
         }
 
-        #preview-wrap {
-            margin-top: 12px;
-            background: rgba(11, 13, 18, 0.85);
-            border: 1px solid #2e323e;
-            border-radius: 6px;
-            padding: 8px;
-        }
-        #preview-canvas {
-            width: 100%;
-            height: auto;
-            display: block;
-            border-radius: 4px;
-            background: #0f1117;
-        }
-        #preview-meta {
-            margin-top: 6px;
-            font-size: 11px;
-            color: #8ea0b5;
-        }
-
         details {
             margin-top: 12px;
             border: 1px solid #2e323e;
@@ -185,6 +165,22 @@
             border: 1px solid #2a3040;
             border-radius: 4px;
             padding: 8px;
+        }
+        #hover-tooltip {
+            position: fixed;
+            z-index: 20;
+            pointer-events: none;
+            display: none;
+            max-width: 420px;
+            background: rgba(20, 24, 32, 0.96);
+            color: #eaf1ff;
+            border: 1px solid #3a4457;
+            border-radius: 6px;
+            padding: 7px 9px;
+            font-size: 12px;
+            line-height: 1.35;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+            word-break: break-word;
         }
     </style>
 </head>
@@ -252,13 +248,7 @@
         <p class="muted">Tip: drag nodes directly in the graph view to place them manually.</p>
 
         <button id="layout-btn" class="btn" disabled>Optimize Physics Layout</button>
-        <button id="preview-btn" class="btn" disabled>Refresh Export Preview</button>
         <button id="snap-btn" class="btn" disabled>Export PNG</button>
-
-        <div id="preview-wrap">
-            <canvas id="preview-canvas" width="320" height="220"></canvas>
-            <div id="preview-meta">Preview: waiting for graph…</div>
-        </div>
 
         <div id="status">Status: Waiting for file...</div>
 
@@ -280,6 +270,7 @@
     </div>
 
     <div id="container"></div>
+    <div id="hover-tooltip"></div>
 
     <script type="module">
         let graphInstance = null;
@@ -289,7 +280,6 @@
 
         const fileInput = document.getElementById('file-input');
         const layoutBtn = document.getElementById('layout-btn');
-        const previewBtn = document.getElementById('preview-btn');
         const snapBtn = document.getElementById('snap-btn');
         const status = document.getElementById('status');
         const widthInput = document.getElementById('width-input');
@@ -304,11 +294,10 @@
         const singleColorInput = document.getElementById('single-color-input');
         const labelsToggle = document.getElementById('labels-toggle');
         const liveLayoutToggle = document.getElementById('live-layout-toggle');
-        const previewCanvas = document.getElementById('preview-canvas');
-        const previewMeta = document.getElementById('preview-meta');
-        let previewDrawPending = false;
-        let liveLayoutTimer = null;
-        let liveLayoutTickRunning = false;
+        const hoverTooltip = document.getElementById('hover-tooltip');
+        let renderRefreshPending = false;
+        let liveLayoutRafId = null;
+        let liveLayoutAfterDragFrames = 0;
 
         const colors = {
             document: "#ff4757", // Rose Red
@@ -352,12 +341,12 @@
             nodeSizeValue.textContent = `${nodeScale.toFixed(1)}x`;
         }
 
-        function schedulePreviewDraw() {
-            if (previewDrawPending) return;
-            previewDrawPending = true;
+        function scheduleRenderRefresh() {
+            if (renderRefreshPending) return;
+            renderRefreshPending = true;
             requestAnimationFrame(() => {
-                previewDrawPending = false;
-                drawPreview();
+                renderRefreshPending = false;
+                if (rendererInstance) rendererInstance.refresh();
             });
         }
 
@@ -382,15 +371,13 @@
                 rendererInstance.setSetting("renderLabels", !!labelsToggle.checked);
                 rendererInstance.refresh();
             }
-            schedulePreviewDraw();
+            scheduleRenderRefresh();
         }
 
         function stopLiveLayoutLoop() {
-            if (liveLayoutTimer) {
-                clearInterval(liveLayoutTimer);
-                liveLayoutTimer = null;
-            }
-            liveLayoutTickRunning = false;
+            if (liveLayoutRafId) cancelAnimationFrame(liveLayoutRafId);
+            liveLayoutRafId = null;
+            liveLayoutAfterDragFrames = 0;
         }
 
         function getLayoutParams() {
@@ -412,27 +399,60 @@
             if (!liveLayoutToggle.checked) return;
             if (!graphInstance || !rendererInstance) return;
 
-            liveLayoutTimer = setInterval(async () => {
-                if (!isDraggingRef()) return;
-                if (liveLayoutTickRunning) return;
-                liveLayoutTickRunning = true;
+            getForceAtlas2().then((forceAtlas2) => {
+                if (!liveLayoutToggle.checked) return;
+                const tick = () => {
+                    if (!graphInstance || !rendererInstance) {
+                        liveLayoutRafId = null;
+                        return;
+                    }
 
-                try {
-                    const forceAtlas2 = await getForceAtlas2();
+                    const stillDragging = isDraggingRef();
+                    if (!stillDragging && liveLayoutAfterDragFrames <= 0) {
+                        liveLayoutRafId = null;
+                        return;
+                    }
+
                     const { settings } = getLayoutParams();
                     forceAtlas2.assign(graphInstance, {
-                        iterations: 6,
+                        iterations: stillDragging ? 2 : 1,
                         settings
                     });
-                    rendererInstance.refresh();
-                    schedulePreviewDraw();
-                } catch (err) {
-                    console.error(err);
-                    stopLiveLayoutLoop();
-                } finally {
-                    liveLayoutTickRunning = false;
-                }
-            }, 120);
+                    scheduleRenderRefresh();
+
+                    if (!stillDragging && liveLayoutAfterDragFrames > 0) {
+                        liveLayoutAfterDragFrames -= 1;
+                    }
+                    liveLayoutRafId = requestAnimationFrame(tick);
+                };
+                liveLayoutRafId = requestAnimationFrame(tick);
+            }).catch((err) => {
+                console.error(err);
+                stopLiveLayoutLoop();
+            });
+        }
+
+        function getPointerFromSigmaEvent(eventLike) {
+            if (!eventLike) return null;
+            if (Number.isFinite(eventLike.clientX) && Number.isFinite(eventLike.clientY)) {
+                return { x: eventLike.clientX, y: eventLike.clientY };
+            }
+            if (eventLike.original && Number.isFinite(eventLike.original.clientX) && Number.isFinite(eventLike.original.clientY)) {
+                return { x: eventLike.original.clientX, y: eventLike.original.clientY };
+            }
+            return null;
+        }
+
+        function positionHoverTooltip(eventLike) {
+            const pointer = getPointerFromSigmaEvent(eventLike);
+            if (!pointer) return;
+            hoverTooltip.style.left = `${pointer.x + 12}px`;
+            hoverTooltip.style.top = `${pointer.y + 12}px`;
+        }
+
+        function hideHoverTooltip() {
+            hoverTooltip.style.display = "none";
+            hoverTooltip.textContent = "";
         }
 
         function setupNodeDragging() {
@@ -445,12 +465,27 @@
             rendererInstance.on("downNode", ({ node, event }) => {
                 isDragging = true;
                 draggedNode = node;
+                graphInstance.setNodeAttribute(draggedNode, "fixed", true);
                 rendererInstance.getCamera().disable();
                 event.preventSigmaDefault();
                 startLiveLayoutLoop(() => isDragging);
             });
 
+            rendererInstance.on("enterNode", ({ node, event }) => {
+                const attrs = graphInstance.getNodeAttributes(node);
+                hoverTooltip.textContent = String(attrs.fullLabel || attrs.label || node);
+                hoverTooltip.style.display = "block";
+                positionHoverTooltip(event);
+            });
+
+            rendererInstance.on("leaveNode", () => {
+                hideHoverTooltip();
+            });
+
             mouseCaptor.on("mousemovebody", (e) => {
+                if (hoverTooltip.style.display === "block") {
+                    positionHoverTooltip(e);
+                }
                 if (!isDragging || !draggedNode) return;
                 const position = rendererInstance.viewportToGraph(e);
                 graphInstance.setNodeAttribute(draggedNode, "x", position.x);
@@ -460,16 +495,21 @@
                     e.original.preventDefault();
                     e.original.stopPropagation();
                 }
-                rendererInstance.refresh();
-                schedulePreviewDraw();
+                scheduleRenderRefresh();
             });
 
             mouseCaptor.on("mouseup", () => {
                 if (!draggedNode) return;
                 isDragging = false;
+                graphInstance.setNodeAttribute(draggedNode, "fixed", false);
+                liveLayoutAfterDragFrames = 40;
                 draggedNode = null;
-                stopLiveLayoutLoop();
+                if (!liveLayoutToggle.checked) stopLiveLayoutLoop();
                 rendererInstance.getCamera().enable();
+            });
+
+            mouseCaptor.on("mouseoutbody", () => {
+                hideHoverTooltip();
             });
         }
 
@@ -526,112 +566,6 @@
         function updateExportButtonLabel() {
             const { width, height } = getExportSize();
             snapBtn.textContent = `Export ${width}x${height} PNG`;
-            previewMeta.textContent = `Preview target: ${width}x${height}px`;
-        }
-
-        function getGraphBounds() {
-            let minX = Infinity;
-            let maxX = -Infinity;
-            let minY = Infinity;
-            let maxY = -Infinity;
-
-            graphInstance.forEachNode((_, attrs) => {
-                minX = Math.min(minX, attrs.x);
-                maxX = Math.max(maxX, attrs.x);
-                minY = Math.min(minY, attrs.y);
-                maxY = Math.max(maxY, attrs.y);
-            });
-
-            if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
-                return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
-            }
-
-            if (minX === maxX) {
-                minX -= 1;
-                maxX += 1;
-            }
-            if (minY === maxY) {
-                minY -= 1;
-                maxY += 1;
-            }
-
-            return { minX, maxX, minY, maxY };
-        }
-
-        function renderGraphToCanvas(canvas, width, height) {
-            if (!graphInstance) return;
-
-            canvas.width = width;
-            canvas.height = height;
-
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return;
-
-            ctx.fillStyle = '#0f1117';
-            ctx.fillRect(0, 0, width, height);
-
-            const bounds = getGraphBounds();
-            const padding = Math.max(20, Math.min(width, height) * 0.06);
-            const graphWidth = bounds.maxX - bounds.minX;
-            const graphHeight = bounds.maxY - bounds.minY;
-            const scale = Math.min(
-                (width - padding * 2) / graphWidth,
-                (height - padding * 2) / graphHeight
-            );
-
-            const offsetX = (width - graphWidth * scale) / 2;
-            const offsetY = (height - graphHeight * scale) / 2;
-            const pointCache = new Map();
-
-            graphInstance.forEachNode((id, attrs) => {
-                pointCache.set(id, {
-                    x: (attrs.x - bounds.minX) * scale + offsetX,
-                    y: (attrs.y - bounds.minY) * scale + offsetY,
-                    color: attrs.color || colors.default,
-                    size: attrs.size || 6,
-                    label: attrs.label || id
-                });
-            });
-
-            const edgeWidth = Math.max(0.7, Math.min(2.2, width / 1800));
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-            ctx.lineWidth = edgeWidth;
-            ctx.beginPath();
-            graphInstance.forEachEdge((_, __, source, target) => {
-                const a = pointCache.get(source);
-                const b = pointCache.get(target);
-                if (!a || !b) return;
-                ctx.moveTo(a.x, a.y);
-                ctx.lineTo(b.x, b.y);
-            });
-            ctx.stroke();
-
-            const nodeScale = Math.max(1, Math.min(3.5, width / 1200));
-            pointCache.forEach((node) => {
-                ctx.beginPath();
-                ctx.fillStyle = node.color;
-                ctx.arc(node.x, node.y, Math.max(1.5, node.size * nodeScale), 0, Math.PI * 2);
-                ctx.fill();
-            });
-
-            const showLabels = labelsToggle.checked && graphInstance.order <= 1200 && width <= 4000;
-            if (showLabels) {
-                ctx.font = `${Math.max(10, Math.floor(width / 120))}px sans-serif`;
-                ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
-                pointCache.forEach((node) => {
-                    ctx.fillText(String(node.label), node.x + 5, node.y - 5);
-                });
-            }
-        }
-
-        function drawPreview() {
-            if (!graphInstance) {
-                previewMeta.textContent = 'Preview: waiting for graph…';
-                return;
-            }
-            renderGraphToCanvas(previewCanvas, previewCanvas.width, previewCanvas.height);
-            const { width, height } = getExportSize();
-            previewMeta.textContent = `Preview target: ${width}x${height}px (${graphInstance.order} nodes, ${graphInstance.size} edges)`;
         }
 
         widthInput.addEventListener('change', updateExportButtonLabel);
@@ -749,16 +683,15 @@
             rendererInstance = new window.Sigma(graphInstance, document.getElementById('container'), {
                 allowInvalidContainer: true,
                 renderLabels: !!labelsToggle.checked,
-                labelColor: { color: "#ffffff" },
+                defaultDrawNodeHover: () => {},
                 edgeColor: "default"
             });
             setupNodeDragging();
 
             status.innerText = `✅ Loaded: ${graphInstance.order} nodes, ${graphInstance.size} edges.`;
             layoutBtn.disabled = false;
-            previewBtn.disabled = false;
             snapBtn.disabled = false;
-            drawPreview();
+            rendererInstance.refresh();
         }
 
         // 3. Physics Layout Spatialize Processor
@@ -782,13 +715,6 @@
 
             rendererInstance.refresh();
             status.innerText = "✅ Layout optimization process complete!";
-            drawPreview();
-        });
-
-        previewBtn.addEventListener('click', () => {
-            if (!rendererInstance) return;
-            drawPreview();
-            status.innerText = "✅ Preview updated.";
         });
 
         // 4. Custom high-resolution export
@@ -802,8 +728,44 @@
             }
             status.innerText = `⚙️ Printing massive ${WIDTH}x${HEIGHT} artifact file...`;
 
+            const layerCanvases = Array.from(document.querySelectorAll('#container canvas'));
+            if (!layerCanvases.length) {
+                status.innerText = "❌ Could not find renderer canvas layers.";
+                return;
+            }
+
+            const sourceWidth = layerCanvases[0].width;
+            const sourceHeight = layerCanvases[0].height;
+            if (!sourceWidth || !sourceHeight) {
+                status.innerText = "❌ Renderer canvas is not ready yet.";
+                return;
+            }
+
+            const source = document.createElement('canvas');
+            source.width = sourceWidth;
+            source.height = sourceHeight;
+            const sourceCtx = source.getContext('2d');
+            if (!sourceCtx) {
+                status.innerText = "❌ Could not create export context.";
+                return;
+            }
+            sourceCtx.fillStyle = '#0f1117';
+            sourceCtx.fillRect(0, 0, sourceWidth, sourceHeight);
+            layerCanvases.forEach((canvasLayer) => {
+                sourceCtx.drawImage(canvasLayer, 0, 0, sourceWidth, sourceHeight);
+            });
+
             const composite = document.createElement('canvas');
-            renderGraphToCanvas(composite, WIDTH, HEIGHT);
+            composite.width = WIDTH;
+            composite.height = HEIGHT;
+            const compositeCtx = composite.getContext('2d');
+            if (!compositeCtx) {
+                status.innerText = "❌ Could not create export context.";
+                return;
+            }
+            compositeCtx.fillStyle = '#0f1117';
+            compositeCtx.fillRect(0, 0, WIDTH, HEIGHT);
+            compositeCtx.drawImage(source, 0, 0, WIDTH, HEIGHT);
 
             // Prompt download interaction out of sandbox window thread context
             const link = document.createElement('a');
@@ -812,7 +774,6 @@
             link.click();
             
             status.innerText = "💾 High-res PNG file downloaded successfully!";
-            drawPreview();
         });
     </script>
 </body>
