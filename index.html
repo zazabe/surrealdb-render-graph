@@ -864,12 +864,8 @@
             status.innerText = "✅ Layout optimization process complete!";
         });
 
-        function renderCurrentViewportToExportCanvas(targetCanvas, targetWidth, targetHeight) {
-            if (!rendererInstance || !graphInstance) return false;
-
-            const rect = document.getElementById('container').getBoundingClientRect();
-            const viewportWidth = Math.max(1, rect.width);
-            const viewportHeight = Math.max(1, rect.height);
+        function renderWholeGraphToExportCanvas(targetCanvas, targetWidth, targetHeight) {
+            if (!graphInstance) return false;
 
             targetCanvas.width = targetWidth;
             targetCanvas.height = targetHeight;
@@ -879,50 +875,101 @@
             ctx.fillStyle = '#0f1117';
             ctx.fillRect(0, 0, targetWidth, targetHeight);
 
-            // Preserve aspect ratio to avoid stretched exports.
-            const scale = Math.min(targetWidth / viewportWidth, targetHeight / viewportHeight);
-            const offsetX = (targetWidth - viewportWidth * scale) / 2;
-            const offsetY = (targetHeight - viewportHeight * scale) / 2;
+            let minX = Infinity;
+            let maxX = -Infinity;
+            let minY = Infinity;
+            let maxY = -Infinity;
+            let hasNodes = false;
 
-            const displayNodes = new Map();
+            graphInstance.forEachNode((_, attrs) => {
+                if (!Number.isFinite(attrs.x) || !Number.isFinite(attrs.y)) return;
+                hasNodes = true;
+                minX = Math.min(minX, attrs.x);
+                maxX = Math.max(maxX, attrs.x);
+                minY = Math.min(minY, attrs.y);
+                maxY = Math.max(maxY, attrs.y);
+            });
+
+            if (!hasNodes) return false;
+
+            if (minX === maxX) {
+                minX -= 1;
+                maxX += 1;
+            }
+            if (minY === maxY) {
+                minY -= 1;
+                maxY += 1;
+            }
+
+            const graphWidth = maxX - minX;
+            const graphHeight = maxY - minY;
+            const basePadding = Math.max(24, Math.min(targetWidth, targetHeight) * 0.05);
+            const scale = Math.min(
+                (targetWidth - basePadding * 2) / graphWidth,
+                (targetHeight - basePadding * 2) / graphHeight
+            );
+
+            const drawnNodes = new Map();
+            let maxNodeRadius = 0;
             graphInstance.forEachNode((nodeId, attrs) => {
-                const display = rendererInstance.getNodeDisplayData(nodeId);
-                if (!display || !Number.isFinite(display.x) || !Number.isFinite(display.y)) return;
-                displayNodes.set(nodeId, {
-                    x: display.x * scale + offsetX,
-                    y: display.y * scale + offsetY,
-                    size: Math.max(1, (display.size || attrs.size || 4) * scale),
-                    color: attrs.color || display.color || colors.default,
+                const px = (attrs.x - minX) * scale + (targetWidth - graphWidth * scale) / 2;
+                const py = (attrs.y - minY) * scale + (targetHeight - graphHeight * scale) / 2;
+                const radius = Math.max(1.8, (attrs.size || 4) * Math.max(1.1, targetWidth / 1200));
+                maxNodeRadius = Math.max(maxNodeRadius, radius);
+                drawnNodes.set(nodeId, {
+                    x: px,
+                    y: py,
+                    radius,
+                    color: attrs.color || colors.default,
                     label: attrs.label || nodeId
                 });
             });
 
-            if (!displayNodes.size) return false;
+            const dynamicPadding = basePadding + maxNodeRadius + 8;
+            if (dynamicPadding > basePadding) {
+                const scale2 = Math.min(
+                    (targetWidth - dynamicPadding * 2) / graphWidth,
+                    (targetHeight - dynamicPadding * 2) / graphHeight
+                );
+                drawnNodes.clear();
+                graphInstance.forEachNode((nodeId, attrs) => {
+                    const px = (attrs.x - minX) * scale2 + (targetWidth - graphWidth * scale2) / 2;
+                    const py = (attrs.y - minY) * scale2 + (targetHeight - graphHeight * scale2) / 2;
+                    const radius = Math.max(1.8, (attrs.size || 4) * Math.max(1.1, targetWidth / 1200));
+                    drawnNodes.set(nodeId, {
+                        x: px,
+                        y: py,
+                        radius,
+                        color: attrs.color || colors.default,
+                        label: attrs.label || nodeId
+                    });
+                });
+            }
 
             ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
-            ctx.lineWidth = Math.max(0.8, 1.2 * scale);
+            ctx.lineWidth = Math.max(0.7, targetWidth / 1800);
             ctx.beginPath();
-            graphInstance.forEachEdge((edgeId, edgeAttrs, source, target) => {
-                const sourceNode = displayNodes.get(source);
-                const targetNode = displayNodes.get(target);
-                if (!sourceNode || !targetNode) return;
-                ctx.moveTo(sourceNode.x, sourceNode.y);
-                ctx.lineTo(targetNode.x, targetNode.y);
+            graphInstance.forEachEdge((_, __, source, target) => {
+                const a = drawnNodes.get(source);
+                const b = drawnNodes.get(target);
+                if (!a || !b) return;
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
             });
             ctx.stroke();
 
-            displayNodes.forEach((node) => {
+            drawnNodes.forEach((node) => {
                 ctx.beginPath();
                 ctx.fillStyle = node.color;
-                ctx.arc(node.x, node.y, node.size, 0, Math.PI * 2);
+                ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
                 ctx.fill();
             });
 
             if (labelsToggle.checked) {
                 ctx.fillStyle = "#eaf1ff";
-                ctx.font = `${Math.max(10, Math.floor(12 * scale))}px sans-serif`;
-                displayNodes.forEach((node) => {
-                    ctx.fillText(String(node.label), node.x + Math.max(4, 4 * scale), node.y - Math.max(4, 4 * scale));
+                ctx.font = `${Math.max(10, Math.floor(targetWidth / 110))}px sans-serif`;
+                drawnNodes.forEach((node) => {
+                    ctx.fillText(String(node.label), node.x + node.radius + 3, node.y - Math.max(2, node.radius * 0.35));
                 });
             }
 
@@ -941,9 +988,9 @@
             status.innerText = `⚙️ Printing massive ${WIDTH}x${HEIGHT} artifact file...`;
 
             const composite = document.createElement('canvas');
-            const ok = renderCurrentViewportToExportCanvas(composite, WIDTH, HEIGHT);
+            const ok = renderWholeGraphToExportCanvas(composite, WIDTH, HEIGHT);
             if (!ok) {
-                status.innerText = "❌ Export failed. Try moving/zooming the graph first, then retry.";
+                status.innerText = "❌ Export failed. Graph data has invalid layout positions.";
                 return;
             }
 
